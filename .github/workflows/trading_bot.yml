@@ -8,9 +8,8 @@ name: Upstox Trading Bot
 # ─────────────────────────────────────────────────────────────────────────────
 on:
   schedule:
-    # TEST: Run every hour (Mon-Fri) to verify schedule works
-    # Will change back to 09:10 IST after test
-    - cron: '0 * * * 1-5'   # Every hour Mon-Fri
+    # TEST: Run every 5 minutes (Mon-Fri) to verify schedule works fast
+    - cron: '*/5 * * * 1-5'   # Every 5 minutes Mon-Fri
 
   workflow_dispatch:          # ← enables the manual "Run workflow" button
     inputs:
