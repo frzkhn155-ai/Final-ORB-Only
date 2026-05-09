@@ -8,8 +8,8 @@ name: Upstox Trading Bot
 # ─────────────────────────────────────────────────────────────────────────────
 on:
   schedule:
-    # TEST: Run every 2 minutes ALL days to verify schedule works
-    - cron: '*/2 * * * *'   # Every 2 minutes ALL days
+    # 03:40 UTC = 09:10 IST (5 min before market open, Mon-Fri)
+    - cron: '40 3 * * 1-5'   # Mon-Fri: 09:10 IST
 
   workflow_dispatch:          # ← enables the manual "Run workflow" button
     inputs:
