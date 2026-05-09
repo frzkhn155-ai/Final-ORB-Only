@@ -1,0 +1,11 @@
+
+====================================================================================================
+SESSION START: 2026-05-10 02:56:53
+Stocks: 183
+Strategies: R3/S3=ON | Box Theory=OFF | Range Trading=OFF | Gap Trading=OFF | Fast Trading=OFF | ORB=ON
+🔥 Klinger Filter: ENABLED (Fast=34, Slow=55, Signal=13) Box=ON Range=ON Adaptive=ON
+💾 Candle Cache: ENABLED (Min candles: 60)
+⚡ Fast Trading: DISABLED
+🚨 Exit Management: ENABLED (Max Loss: ₹50,000, Max Profit: ₹100,000)
+====================================================================================================
+

@@ -1,0 +1,10 @@
+{
+  "symbol": "PHOENIXLTD",
+  "instrument_key": "NSE_EQ|INE211B01039",
+  "last_updated": "2026-05-10T02:56:36.326237",
+  "candle_count": 78,
+  "date_range": {
+    "start": "2026-01-12T00:00:00+05:30",
+    "end": "2026-05-08T00:00:00+05:30"
+  }
+}

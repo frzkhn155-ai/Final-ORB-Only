@@ -1,0 +1,10 @@
+{
+  "symbol": "ASHOKLEY",
+  "instrument_key": "NSE_EQ|INE208A01029",
+  "last_updated": "2026-05-10T02:56:49.006724",
+  "candle_count": 78,
+  "date_range": {
+    "start": "2026-01-12T00:00:00+05:30",
+    "end": "2026-05-08T00:00:00+05:30"
+  }
+}

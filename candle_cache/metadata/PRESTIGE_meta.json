@@ -1,0 +1,10 @@
+{
+  "symbol": "PRESTIGE",
+  "instrument_key": "NSE_EQ|INE811K01011",
+  "last_updated": "2026-05-10T02:56:31.609497",
+  "candle_count": 78,
+  "date_range": {
+    "start": "2026-01-12T00:00:00+05:30",
+    "end": "2026-05-08T00:00:00+05:30"
+  }
+}
