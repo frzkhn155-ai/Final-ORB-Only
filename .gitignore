@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+candle_cache/
+*.csv
+*.txt
+*.json
+upstox_token.txt
+upstox_refresh_token.txt
+token_timestamp.json
+.env
+.DS_Store
+*.log
