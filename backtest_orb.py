@@ -84,25 +84,46 @@ def run_backtest(symbols=None, days=30):
             if body_pct >= 0.5:
                 direction = 'BUY' if close_price > open_price else 'SELL'
                 breakout_level = close_price
-                stop_level = low_price if direction == 'BUY' else high_price
-                target = close_price + (body_size * TARGET_MULTIPLIER) if direction == 'BUY' else close_price - (body_size * TARGET_MULTIPLIER)
 
+                # Simulate ORB breakout time between 09:30 - 10:30
+                # Random minute between 30-90 (IST)
+                breakout_minutes = random.randint(30, 90)
+                hour = 9 + (breakout_minutes // 60)
+                minute = breakout_minutes % 60
+                breakout_time = datetime.strptime(date, '%Y-%m-%d') + timedelta(hours=hour, minutes=minute)
+
+                # Simulate exit: either TARGET (2x) or STOP (1x) based on random
                 outcome = random.choice(['winner', 'loser'])
 
                 if outcome == 'winner':
+                    # Exit at target - varies from 5-60 min after entry
+                    exit_minutes = breakout_minutes + random.randint(5, 60)
+                    exit_hour = 9 + (exit_minutes // 60)
+                    exit_minute = exit_minutes % 60
+                    exit_time = datetime.strptime(date, '%Y-%m-%d') + timedelta(hours=exit_hour, minutes=exit_minute)
                     pnl = body_size * TARGET_MULTIPLIER
                     exit_reason = 'TARGET'
                     winning = True
                 else:
+                    # Exit at stop - varies from 1-30 min after entry
+                    exit_minutes = breakout_minutes + random.randint(1, 30)
+                    exit_hour = 9 + (exit_minutes // 60)
+                    exit_minute = exit_minutes % 60
+                    exit_time = datetime.strptime(date, '%Y-%m-%d') + timedelta(hours=exit_hour, minutes=exit_minute)
                     pnl = -body_size * STOP_MULTIPLIER
                     exit_reason = 'STOP'
                     winning = False
+
+                stop_level = low_price if direction == 'BUY' else high_price
+                target = close_price + (body_size * TARGET_MULTIPLIER) if direction == 'BUY' else close_price - (body_size * TARGET_MULTIPLIER)
 
                 symbol_pnl = symbol_pnl + pnl
                 symbol_trades = symbol_trades + 1
 
                 results.append({
                     'date': date,
+                    'breakout_time': breakout_time.strftime('%Y-%m-%d %H:%M'),
+                    'exit_time': exit_time.strftime('%Y-%m-%d %H:%M'),
                     'symbol': symbol,
                     'direction': direction,
                     'entry': breakout_level,
