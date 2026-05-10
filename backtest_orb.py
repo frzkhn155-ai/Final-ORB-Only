@@ -90,7 +90,9 @@ def run_backtest(symbols=None, days=30):
                 breakout_minutes = random.randint(30, 90)
                 hour = 9 + (breakout_minutes // 60)
                 minute = breakout_minutes % 60
-                breakout_time = datetime.strptime(date, '%Y-%m-%d') + timedelta(hours=hour, minutes=minute)
+                # Parse date - remove timezone info
+                date_only = date.split(' ')[0]
+                breakout_time = datetime.strptime(date_only, '%Y-%m-%d') + timedelta(hours=hour, minutes=minute)
 
                 # Simulate exit: either TARGET (2x) or STOP (1x) based on random
                 outcome = random.choice(['winner', 'loser'])
@@ -100,7 +102,7 @@ def run_backtest(symbols=None, days=30):
                     exit_minutes = breakout_minutes + random.randint(5, 60)
                     exit_hour = 9 + (exit_minutes // 60)
                     exit_minute = exit_minutes % 60
-                    exit_time = datetime.strptime(date, '%Y-%m-%d') + timedelta(hours=exit_hour, minutes=exit_minute)
+                    exit_time = datetime.strptime(date_only, '%Y-%m-%d') + timedelta(hours=exit_hour, minutes=exit_minute)
                     pnl = body_size * TARGET_MULTIPLIER
                     exit_reason = 'TARGET'
                     winning = True
@@ -109,7 +111,7 @@ def run_backtest(symbols=None, days=30):
                     exit_minutes = breakout_minutes + random.randint(1, 30)
                     exit_hour = 9 + (exit_minutes // 60)
                     exit_minute = exit_minutes % 60
-                    exit_time = datetime.strptime(date, '%Y-%m-%d') + timedelta(hours=exit_hour, minutes=exit_minute)
+                    exit_time = datetime.strptime(date_only, '%Y-%m-%d') + timedelta(hours=exit_hour, minutes=exit_minute)
                     pnl = -body_size * STOP_MULTIPLIER
                     exit_reason = 'STOP'
                     winning = False
