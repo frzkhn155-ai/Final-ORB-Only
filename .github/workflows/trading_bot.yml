@@ -22,7 +22,7 @@ jobs:
   run-bot:
     name: Run Trading Bot
     runs-on: ubuntu-latest
-    timeout-minutes: 390      # 6.5 hours — covers full market session + buffer
+    timeout-minutes: 340      # 5h 40min — stops at 2:50 PM IST
 
     steps:
       # ── 1. Checkout code ────────────────────────────────────────────────────
