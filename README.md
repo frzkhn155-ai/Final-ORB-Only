@@ -30,7 +30,29 @@ Real-time F&O options trading bot for NSE using Upstox API.
 |------|---------|
 | `Both4withcache10_headless.py` | Main bot — ORB strategy only |
 | `ai_assistant.py` | AI assistant (optional) |
+| `orb_comparison.py` | Dual-engine ORB comparison harness (V1 IST vs V2 local clock) |
 | `requirements.txt` | Python dependencies |
+
+---
+
+## ORB Comparison Harness (`orb_comparison.py`)
+
+Runs two ORB implementations side-by-side to compare signal and breakout output.
+
+- **V1 (IST-aware)** — uses `pytz` / `now_ist()`
+- **V2 (local clock)** — uses `datetime.now()`
+
+### Usage
+
+```bash
+# Test mode (synthetic data, no market connection needed)
+python orb_comparison.py
+
+# Live mode (requires Upstox token)
+python orb_comparison.py --token YOUR_UPSTOX_TOKEN --live
+```
+
+Output is written to `orb_v1.log`, `orb_v2.log`, and `orb_diff.log` (divergences only).
 
 ---
 
@@ -44,10 +66,7 @@ pip install -r requirements.txt
 
 ### 2. Chrome + ChromeDriver
 
-```bash
-# Chrome must be installed
-# webdriver-manager handles ChromeDriver automatically
-```
+Chrome must be installed. webdriver-manager handles ChromeDriver automatically.
 
 ### 3. Configure credentials
 
