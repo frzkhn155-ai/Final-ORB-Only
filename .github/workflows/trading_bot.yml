@@ -1,65 +1,78 @@
-name: Upstox Trading Bot
+name: Upstox Trading Bot (ORB Only)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TRIGGERS
-#   • Schedule  : runs automatically at 09:10 IST (03:40 UTC) on weekdays
-#   • Manual    : go to Actions tab → "Upstox Trading Bot" → "Run workflow"
-#                 to start at any time
+#   • Schedule  : 09:10 IST (03:40 UTC) Mon–Fri, 5 min before NSE open
+#   • Manual    : Actions → "Run workflow"
 # ─────────────────────────────────────────────────────────────────────────────
 on:
   schedule:
-    # 03:40 UTC = 09:10 IST (5 min before market open, Mon-Fri)
-    - cron: '40 3 * * 1-5'   # Mon-Fri: 09:10 IST
-
-  workflow_dispatch:          # ← enables the manual "Run workflow" button
+    - cron: '40 3 * * 1-5'
+  workflow_dispatch:
     inputs:
       reason:
         description: 'Reason for manual run (optional)'
         required: false
         default: 'Manual trigger'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # required before GitHub forces it on 2026-06-02
+
 jobs:
   run-bot:
-    name: Run Trading Bot
+    name: Run ORB Trading Bot
     runs-on: ubuntu-latest
-    timeout-minutes: 340      # 5h 40min — stops at 2:50 PM IST
+    timeout-minutes: 390     # 6.5 h — full market session + buffer
 
     steps:
-      # ── 1. Checkout code ────────────────────────────────────────────────────
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Set up Python ────────────────────────────────────────────────────
+      # ── 2. Python ────────────────────────────────────────────────────────────
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      # ── 3. Install Chrome + ChromeDriver (for Selenium headless login) ──────
+      # ── 3. System dependencies ───────────────────────────────────────────────
+      # xclip + xdotool are required by pyperclip (used in the trading script).
+      # Without them, pyperclip raises an exception on headless Linux and the
+      # bot crashes at startup with no log files produced.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y xclip xdotool
+
+      # ── 4. Chrome (modern method — apt-key is deprecated on Ubuntu 24.04) ───
       - name: Install Google Chrome
         run: |
-          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" \
-            | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo install -m 0755 -d /etc/apt/keyrings
+          wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/google-chrome.gpg
+          sudo chmod a+r /etc/apt/keyrings/google-chrome.gpg
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-chrome.gpg] \
+            http://dl.google.com/linux/chrome/deb/ stable main" \
+            | sudo tee /etc/apt/sources.list.d/google-chrome.list > /dev/null
           sudo apt-get update -q
           sudo apt-get install -y google-chrome-stable
           google-chrome --version
 
-      # ── 4. Install Python dependencies ──────────────────────────────────────
+      # ── 5. Python packages ───────────────────────────────────────────────────
       - name: Install Python packages
         run: pip install -r requirements.txt
 
-      # ── 5. Restore cached candle data (speeds up re-runs) ───────────────────
+      # ── 6. Restore candle cache ──────────────────────────────────────────────
       - name: Restore candle cache
         uses: actions/cache@v4
         with:
           path: candle_cache/
-          key: candle-cache-${{ runner.os }}-${{ github.run_id }}
+          key: candle-cache-orb-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            candle-cache-${{ runner.os }}-
+            candle-cache-orb-${{ runner.os }}-
 
-      # ── 6. Restore saved token (avoids full OAuth login on every run) ────────
+      # ── 7. Restore saved token ───────────────────────────────────────────────
       - name: Restore Upstox token
         uses: actions/cache@v4
         with:
@@ -71,30 +84,81 @@ jobs:
           restore-keys: |
             upstox-token-${{ runner.os }}
 
-      # ── 7. Run the bot ───────────────────────────────────────────────────────
+      # ── 8. Validate token secret ─────────────────────────────────────────────
+      - name: Validate Upstox token secret
+        env:
+          UPSTOX_TOKEN: ${{ secrets.UPSTOX_TOKEN }}
+        run: |
+          if [ -z "$UPSTOX_TOKEN" ]; then
+            echo "⚠️  WARNING: UPSTOX_TOKEN secret is empty."
+            echo "   Bot will fall back to Selenium OAuth login."
+          else
+            echo "✅ UPSTOX_TOKEN is set (length: ${#UPSTOX_TOKEN} chars)"
+          fi
+
+      # ── 9. Run the bot ───────────────────────────────────────────────────────
       - name: Run trading bot
         env:
-          # ── Upstox credentials (set these in: Settings → Secrets → Actions) ──
-          UPSTOX_EMAIL:        ${{ secrets.UPSTOX_EMAIL }}
-          UPSTOX_PASSWORD:     ${{ secrets.UPSTOX_PASSWORD }}
-          UPSTOX_MOBILE:       ${{ secrets.UPSTOX_MOBILE }}
-          UPSTOX_PASSCODE:     ${{ secrets.UPSTOX_PASSCODE }}
-          UPSTOX_API_KEY:      ${{ secrets.UPSTOX_API_KEY }}
-          UPSTOX_API_SECRET:   ${{ secrets.UPSTOX_API_SECRET }}
-          UPSTOX_TOKEN:        ${{ secrets.UPSTOX_TOKEN }}
-
-          # ── AI assistant (optional) ──────────────────────────────────────────
-          GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
-
-          # ── Display required for Chrome headless ─────────────────────────────
+          UPSTOX_EMAIL:      ${{ secrets.UPSTOX_EMAIL }}
+          UPSTOX_PASSWORD:   ${{ secrets.UPSTOX_PASSWORD }}
+          UPSTOX_MOBILE:     ${{ secrets.UPSTOX_MOBILE }}
+          UPSTOX_PASSCODE:   ${{ secrets.UPSTOX_PASSCODE }}
+          UPSTOX_API_KEY:    ${{ secrets.UPSTOX_API_KEY }}
+          UPSTOX_API_SECRET: ${{ secrets.UPSTOX_API_SECRET }}
+          UPSTOX_TOKEN:      ${{ secrets.UPSTOX_TOKEN }}
+          GROQ_API_KEY:      ${{ secrets.GROQ_API_KEY }}
           DISPLAY: ':99'
         run: |
-          # Start virtual display for Chrome
           Xvfb :99 -screen 0 1920x1080x24 &
           sleep 2
-          python Both4withcache10_headless.py
 
-      # ── 8. Save updated token for next run ───────────────────────────────────
+          python - <<'PYEOF'
+          import traceback, sys, runpy
+          try:
+              runpy.run_path("Both4withcache10_headless.py", run_name="__main__")
+          except SystemExit as e:
+              sys.exit(e.code)
+          except Exception:
+              tb = traceback.format_exc()
+              print("❌ UNHANDLED EXCEPTION:\n" + tb, file=sys.stderr)
+              with open("crash_log.txt", "w") as f:
+                  f.write(tb)
+              sys.exit(1)
+          PYEOF
+
+      # ── 10. Sync fresh token to BOTH repos ──────────────────────────────────
+      # If the bot generated a new OAuth token this run, push it to the
+      # UPSTOX_TOKEN secret in both repos so the other bot picks it up
+      # tomorrow without having to re-run OAuth.
+      # Requires a PAT secret GH_PAT with repo scope (Settings → Secrets → Actions).
+      - name: Sync token to both repos
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -z "$GH_PAT" ]; then
+            echo "⚠️  GH_PAT not set — skipping cross-repo token sync."
+            echo "   Add a PAT with repo scope as GH_PAT in both repos' secrets."
+            exit 0
+          fi
+          TOKEN_VALUE=""
+          if [ -f upstox_token.txt ]; then
+            TOKEN_VALUE=$(cat upstox_token.txt | tr -d '[:space:]')
+          fi
+          if [ -z "$TOKEN_VALUE" ]; then
+            echo "⚠️  upstox_token.txt is empty — nothing to sync."
+            exit 0
+          fi
+          echo "✅ Syncing token (length: ${#TOKEN_VALUE}) to both repos..."
+          gh secret set UPSTOX_TOKEN --body "$TOKEN_VALUE" \
+            --repo frzkhn155-ai/Final-ORB-Only
+          gh secret set UPSTOX_TOKEN --body "$TOKEN_VALUE" \
+            --repo frzkhn155-ai/Final
+          echo "✅ UPSTOX_TOKEN updated in both repositories."
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+
+      # ── 11. Save updated token ───────────────────────────────────────────────
       - name: Save Upstox token (post-run)
         if: always()
         uses: actions/cache@v4
@@ -105,28 +169,26 @@ jobs:
             token_timestamp.json
           key: upstox-token-${{ runner.os }}
 
-      # ── 9. Upload all log/CSV files as artifacts ─────────────────────────────
+      # ── 12. Upload logs ──────────────────────────────────────────────────────
       - name: Upload trading logs
-        if: always()          # upload even if bot crashed
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trading-logs-${{ github.run_id }}
+          name: orb-trading-logs-${{ github.run_id }}
           retention-days: 30
+          if-no-files-found: warn
           path: |
+            crash_log.txt
             r3_live_alerts.txt
             r3_live_alerts.csv
-            gap_trading_alerts.txt
+            orb_signals.csv
+            orb_trades.csv
+            orb_trading_log.txt
             gap_trading_alerts.csv
-            box_trading_alerts.txt
             box_trading_alerts.csv
-            range_trading_alerts.txt
             range_trading_alerts.csv
-            exits_log.txt
             exits_log.csv
             positions_tracking.csv
             fast_trades_entries.csv
             fast_trades_exits.csv
-            orb_signals.csv
-            orb_trades.csv
-            orb_trading_log.txt
             cache_stats.json
