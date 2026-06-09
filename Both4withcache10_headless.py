@@ -333,6 +333,15 @@ ORB_MIN_CANDLE_BODY_LONG  = 0.6    # LONG ORB: slightly higher body % required
 ORB_MIN_CANDLE_BODY_SHORT = 0.6    # SHORT ORB: slightly higher body % required
 ORB_REQUIRE_STRONG_FII_FOR_MEDIUM_RSI = True  # If RSI borderline, require STRONG FII/DII
 
+# ── ORB Reversal (contra-trade) config ──────────────────────────────────────
+# When the initial ORB signal reverses strongly, fire an OPPOSITE trade.
+ORB_ENABLE_REVERSAL_TRADE    = True   # Master toggle for contra-ORB trades
+ORB_REVERSAL_MIN_MOVE_PCT    = 0.4   # Price must move ≥0.4% against signal before reversal fires
+ORB_REVERSAL_CANDLES_MIN     = 2     # Wait at least 2 candles after ORB signal before checking
+ORB_REVERSAL_REQUIRE_HA      = True  # Require HA colour flip for confirmation
+ORB_REVERSAL_REQUIRE_TOPPING = True  # Require detect_topping_reversal confirmation
+ORB_REVERSAL_WINDOW_MINUTES  = 45    # Only fire reversal within 45 min of original ORB signal
+
 # File paths for ORB logging
 ORB_SIGNALS_FILE = "orb_signals.csv"
 ORB_TRADES_FILE = "orb_trades.csv"
@@ -464,6 +473,8 @@ ORB_ACTIVE_TRADES = {}
 ORB_ALERTED_STOCKS = set()   # fired ORB signal today
 ORB_ORDER_COUNT = 0
 ORB_PROCESSED_TODAY = False
+ORB_REVERSAL_ALERTED = set()   # symbols that already fired a reversal trade today
+ACCESS_TOKEN = ''             # set by run_trading_bot; used by background threads
 
 # ── PERSISTENT HTTP SESSIONS ─────────────────────────────────────────────────
 # Reusing a Session keeps the TCP/TLS connection alive across calls.
@@ -3534,6 +3545,7 @@ def check_orb_time_and_process(access_token, live_data):
     if current_time < "09:15":
         ORB_PROCESSED_TODAY = False
         ORB_LATE_CHECKED.clear()
+        ORB_REVERSAL_ALERTED.clear()   # reset reversal tracker each morning
 
     # ── PRIMARY PASS ─────────────────────────────────────────────────────────
     # Old: only ran 09:30-09:35. Bot starting at 09:36 silently skipped ORB.
@@ -3570,9 +3582,278 @@ def monitor_orb_breakouts(live_data, trader=None):
             breakout = check_orb_breakout(symbol, ltp, volume, data)
             if breakout:
                 send_orb_alert(breakout, trader)
+                continue   # acting on continuation — skip reversal check this cycle
+
+            # ── ORB Reversal check ────────────────────────────────────────────
+            if ORB_ENABLE_REVERSAL_TRADE and symbol not in ORB_REVERSAL_ALERTED:
+                _access_token = globals().get('ACCESS_TOKEN', '')
+                reversal = check_orb_reversal(symbol, ltp, volume, data, _access_token, trader)
+                if reversal:
+                    send_orb_reversal_alert(reversal, trader)
         except Exception as e:
             if DEBUG_MODE:
                 print(f"ORB monitor error {symbol_key}: {e}")
+
+def check_orb_reversal(symbol, ltp, volume, live_data, access_token, trader=None):
+    """
+    Detect a strong price reversal AFTER an ORB signal has been generated.
+
+    WHY THIS EXISTS — MANKIND 03-Jun-2026 case study:
+    The bot generated a BEARISH_ORB (SELL) signal at 09:20 with VERY_HIGH confidence
+    and STRONG_SELL FII/DII. However the price reversed hard upward after the initial
+    bearish candle. The original ORB machinery only looks for continuation of the
+    initial signal; it has no mechanism to catch the reversal and take the opposite trade.
+
+    HOW IT WORKS:
+    1. A prior ORB signal must exist for the symbol (either direction).
+    2. Price must have moved ≥ORB_REVERSAL_MIN_MOVE_PCT% AGAINST the original signal.
+    3. The reversal window (ORB_REVERSAL_WINDOW_MINUTES) must not have expired.
+    4. For BEARISH→BULLISH flip: detect_topping_reversal on the *inverted* scenario,
+       i.e. the price is now bouncing off the LOWER band — use detect_fast_long_setup
+       as a proxy, or directly check HA flip via _ha_analyse_symbol.
+    5. For BULLISH→BEARISH flip: detect_topping_reversal at upper band.
+    6. check_ha_reversal_alerts (HA colour flip + Klinger) is used as secondary gate.
+    7. Each symbol fires at most ONE reversal trade per session (ORB_REVERSAL_ALERTED).
+
+    Returns a reversal signal dict (same shape as breakout_signal) or None.
+    """
+    global ORB_REVERSAL_ALERTED
+
+    if not ORB_ENABLE_REVERSAL_TRADE:
+        return None
+
+    if symbol not in ORB_SIGNALS:
+        return None
+
+    if symbol in ORB_REVERSAL_ALERTED:
+        return None   # already fired reversal today
+
+    orb = ORB_SIGNALS[symbol]
+    original_direction = orb.get('direction', '')   # 'BUY' or 'SELL'
+    signal_time = orb.get('signal_time')
+
+    # ── Reversal window check ─────────────────────────────────────────────────
+    if signal_time is not None:
+        elapsed = (now_ist() - signal_time).total_seconds() / 60
+        if elapsed > ORB_REVERSAL_WINDOW_MINUTES:
+            if DEBUG_MODE:
+                print(f"⛔ ORB reversal window expired for {symbol} ({elapsed:.0f}min > {ORB_REVERSAL_WINDOW_MINUTES}min)")
+            return None
+
+    # ── Minimum adverse move check ────────────────────────────────────────────
+    breakout_level = orb.get('breakout_level', ltp)
+    if original_direction == 'SELL':
+        # Original signal: bearish. Reversal = price going UP above breakout level.
+        adverse_move_pct = (ltp - breakout_level) / breakout_level * 100
+        reversal_direction = 'BUY'
+        reversal_signal_type = 'ORB_REVERSAL_LONG'
+    else:
+        # Original signal: bullish. Reversal = price going DOWN below breakout level.
+        adverse_move_pct = (breakout_level - ltp) / breakout_level * 100
+        reversal_direction = 'SELL'
+        reversal_signal_type = 'ORB_REVERSAL_SHORT'
+
+    if adverse_move_pct < ORB_REVERSAL_MIN_MOVE_PCT:
+        if DEBUG_MODE:
+            print(f"⛔ ORB reversal: {symbol} adverse move {adverse_move_pct:.2f}% < min {ORB_REVERSAL_MIN_MOVE_PCT}%")
+        return None
+
+    # ── Fetch 5-min candle data for technical analysis ────────────────────────
+    try:
+        df = get_realtime_5min_df(symbol, min_bars=10)
+        if df is None or len(df) < 5:
+            if DEBUG_MODE:
+                print(f"⛔ ORB reversal: {symbol} insufficient candle data")
+            return None
+    except Exception as e:
+        if DEBUG_MODE:
+            print(f"⛔ ORB reversal: {symbol} candle fetch error: {e}")
+        return None
+
+    candle_count_since_signal = len(df)
+    if candle_count_since_signal < ORB_REVERSAL_CANDLES_MIN:
+        if DEBUG_MODE:
+            print(f"⛔ ORB reversal: {symbol} too few candles since signal ({candle_count_since_signal} < {ORB_REVERSAL_CANDLES_MIN})")
+        return None
+
+    # ── Klinger data for confirmation functions ───────────────────────────────
+    ikey = orb.get('instrument_key') or SYMBOL_TO_ISIN.get(symbol, '')
+    klinger_info = R3_LEVELS.get(ikey, {}).get('klinger') if ikey else None
+
+    # ── Gate 1: detect_topping_reversal (for BEARISH→BULLISH, check lower band bounce) ──
+    # For a BULLISH→BEARISH reversal, detect_topping_reversal directly fits.
+    # For BEARISH→BULLISH, we run detect_topping_reversal on the *inverted* df
+    # (flip OHLC) to reuse the same upper-band-wick logic on the lower band.
+    topping_confirmed = False
+    if ORB_REVERSAL_REQUIRE_TOPPING:
+        try:
+            if reversal_direction == 'SELL':
+                # Price rallied and is now potentially topping — standard detect_topping_reversal
+                topping_result = detect_topping_reversal(df, klinger_data=klinger_info, strict=False)
+                topping_confirmed = topping_result is not None
+            else:
+                # Price sold off and is now potentially bottoming — invert OHLC to reuse function
+                df_inv = df.copy()
+                df_inv['high']  = -df['low']
+                df_inv['low']   = -df['high']
+                df_inv['open']  = -df['open']
+                df_inv['close'] = -df['close']
+                topping_result = detect_topping_reversal(df_inv, klinger_data=klinger_info, strict=False)
+                topping_confirmed = topping_result is not None
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"⛔ ORB reversal: detect_topping_reversal error for {symbol}: {e}")
+            topping_confirmed = False
+
+    # ── Gate 2: HA reversal check via _ha_analyse_symbol ─────────────────────
+    # check_ha_reversal_alerts is designed to work on ACTIVE_POSITIONS.
+    # For ORB (alert-only), we directly call _ha_analyse_symbol which is the
+    # underlying per-symbol analyser, and check for the required colour flip.
+    ha_confirmed = False
+    if ORB_REVERSAL_REQUIRE_HA:
+        try:
+            # 'LONG' means we hold a long and are checking for a bearish flip.
+            # Here we want to detect the OPPOSITE: original signal direction went wrong.
+            # e.g. original SELL went wrong → we now want a BULLISH HA flip (colour GREEN)
+            ha_watch_signal = 'SHORT' if reversal_direction == 'BUY' else 'LONG'
+            ha_result = _ha_analyse_symbol(access_token, symbol, ikey, ha_watch_signal)
+            if ha_result is not None:
+                ha_confirmed = ha_result.get('needs_alert', False)
+                if DEBUG_MODE and ha_confirmed:
+                    c2 = ha_result.get('c_prev2', '?')
+                    c1 = ha_result.get('c_prev1', '?')
+                    cl = ha_result.get('c_last', '?')
+                    print(f"✅ ORB reversal HA flip confirmed for {symbol}: [{c2}]→[{c1}]→[{cl}]")
+        except Exception as e:
+            if DEBUG_MODE:
+                print(f"⛔ ORB reversal: HA check error for {symbol}: {e}")
+            ha_confirmed = False
+
+    # ── Decision: both gates required (configurable) ──────────────────────────
+    if ORB_REVERSAL_REQUIRE_TOPPING and not topping_confirmed:
+        if DEBUG_MODE:
+            print(f"⛔ ORB reversal: {symbol} topping/bottoming pattern not confirmed")
+        return None
+
+    if ORB_REVERSAL_REQUIRE_HA and not ha_confirmed:
+        if DEBUG_MODE:
+            print(f"⛔ ORB reversal: {symbol} HA colour flip not confirmed")
+        return None
+
+    # ── Volume check ──────────────────────────────────────────────────────────
+    avg_volume = (VOLUME_DATA.get(symbol, {}).get('avg_volume')
+                  or VOLUME_DATA.get(symbol, {}).get('avg_vol_20d')
+                  or live_data.get('avg_volume', 0))
+    volume_ratio = volume / avg_volume if avg_volume > 0 else 0
+
+    if avg_volume > 0 and volume_ratio < ORB_VOLUME_CONFIRMATION:
+        if DEBUG_MODE:
+            print(f"⛔ ORB reversal: {symbol} volume ratio {volume_ratio:.2f} < {ORB_VOLUME_CONFIRMATION}")
+        return None
+
+    # ── Build reversal signal ─────────────────────────────────────────────────
+    last_candle = df.iloc[-1]
+    if reversal_direction == 'BUY':
+        entry_price = ltp
+        stop_loss   = last_candle['low'] * 0.997   # just below the recent low
+        risk        = entry_price - stop_loss
+        if risk <= 0:
+            return None
+        target      = entry_price + 2.0 * risk
+    else:
+        entry_price = ltp
+        stop_loss   = last_candle['high'] * 1.003  # just above the recent high
+        risk        = stop_loss - entry_price
+        if risk <= 0:
+            return None
+        target      = entry_price - 2.0 * risk
+
+    risk_reward = abs(target - entry_price) / risk if risk > 0 else 0
+
+    # Mark as alerted so this reversal only fires once per symbol per session
+    ORB_REVERSAL_ALERTED.add(symbol)
+
+    return {
+        'symbol':           symbol,
+        'signal':           reversal_signal_type,
+        'direction':        reversal_direction,
+        'entry_price':      entry_price,
+        'stop_loss':        stop_loss,
+        'target':           target,
+        'volume_ratio':     volume_ratio,
+        'risk':             risk,
+        'reward':           abs(target - entry_price),
+        'risk_reward':      risk_reward,
+        'confidence':       orb.get('confidence', 'HIGH'),
+        'fii_dii_signal':   orb.get('fii_dii_signal', 'NEUTRAL'),
+        'orb_data':         orb,
+        'adverse_move_pct': adverse_move_pct,
+        'topping_confirmed': topping_confirmed,
+        'ha_confirmed':     ha_confirmed,
+        'entry_type':       'ORB_REVERSAL',
+        'original_direction': original_direction,
+    }
+
+
+def send_orb_reversal_alert(signal, trader=None):
+    """Print + log an ORB contra/reversal trade alert."""
+    global ORB_ORDER_COUNT
+
+    orig_dir = signal.get('original_direction', '?')
+    arrow    = '🟢' if signal['direction'] == 'BUY' else '🔴'
+
+    print("\n" + "=" * 100)
+    print(f"{arrow} ORB REVERSAL SIGNAL: {signal['symbol']} {arrow}")
+    print("=" * 100)
+    print(f"  Original ORB direction : {orig_dir}  →  NOW REVERSING to {signal['direction']}")
+    print(f"  Signal type            : {signal['signal']}")
+    print(f"  Adverse move vs ORB    : {signal['adverse_move_pct']:.2f}%")
+    print(f"  Topping/Bottoming patt : {'✅ YES' if signal['topping_confirmed'] else '⚠️ NO'}")
+    print(f"  HA colour flip         : {'✅ YES' if signal['ha_confirmed'] else '⚠️ NO'}")
+    print(f"  Confidence             : {signal['confidence']}")
+    print(f"  FII/DII signal         : {signal['fii_dii_signal']}")
+    print(f"  Entry Price            : ₹{signal['entry_price']:.2f}")
+    print(f"  Stop Loss              : ₹{signal['stop_loss']:.2f}")
+    print(f"  Target                 : ₹{signal['target']:.2f}")
+    print(f"  Risk : Reward          : {signal['risk_reward']:.2f}:1")
+    print(f"  Volume                 : {signal['volume_ratio']:.2f}x average")
+    print("=" * 100)
+
+    log_orb_trade(signal, 'REVERSAL_ENTRY')
+
+    with open(ORB_LOG_FILE, 'a', encoding='utf-8') as f:
+        f.write(f"\n{'='*100}\n")
+        f.write(f"ORB REVERSAL ALERT: {now_ist().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Symbol: {signal['symbol']} | Original: {orig_dir} → Reversal: {signal['direction']}\n")
+        f.write(f"Adverse move: {signal['adverse_move_pct']:.2f}% | Topping: {signal['topping_confirmed']} | HA: {signal['ha_confirmed']}\n")
+        f.write(f"Entry: ₹{signal['entry_price']:.2f} | Stop: ₹{signal['stop_loss']:.2f} | Target: ₹{signal['target']:.2f}\n")
+        f.write(f"R:R: {signal['risk_reward']:.2f}:1 | Volume: {signal['volume_ratio']:.2f}x\n")
+        f.write(f"{'='*100}\n")
+
+    if ENABLE_AUTO_TRADING and trader and ORB_ORDER_COUNT < MAX_ORDERS_PER_DAY:
+        if not is_order_time_allowed():
+            print(f"⏭️  ORB Reversal {signal['symbol']}: order skipped — outside trading hours")
+            return
+        print(f"\n📤 Placing ORB REVERSAL {signal['direction']} order for {signal['symbol']}...")
+        orb_breakout = {
+            'symbol':         signal['symbol'],
+            'instrument_key': signal.get('orb_data', {}).get('instrument_key', ''),
+            'breakout_type':  'CE' if signal['direction'] == 'BUY' else 'PE',
+            'strategy':       'ORB_REVERSAL',
+            'entry_price':    signal['entry_price'],
+            'stop_loss':      signal['stop_loss'],
+            'target':         signal['target'],
+            'klinger_status': signal.get('orb_data', {}).get('klinger_at_signal'),
+        }
+        order_id = place_breakout_order(orb_breakout, trader)
+        if order_id:
+            ORB_ORDER_COUNT += 1
+            print(f"✅ ORB Reversal order placed: {order_id} | ORB orders today: {ORB_ORDER_COUNT}/{MAX_ORDERS_PER_DAY}")
+        else:
+            print(f"⚠️ ORB Reversal order failed for {signal['symbol']}")
+    elif ORB_ORDER_COUNT >= MAX_ORDERS_PER_DAY:
+        print(f"⚠️ ORB order limit reached ({ORB_ORDER_COUNT}/{MAX_ORDERS_PER_DAY}) — reversal signal logged only")
+
 
 def print_orb_summary():
     if not ENABLE_ORB_STRATEGY:
@@ -9432,6 +9713,8 @@ def enhanced_monitor(access_token, keys, symbols):
 # ========== MAIN EXECUTION ==========
 def run_trading_bot(access_token):
     """Main execution function for trading bot"""
+    global ACCESS_TOKEN
+    ACCESS_TOKEN = access_token   # expose to background threads (e.g. check_orb_reversal)
     banner()
     
     if not verify_token(access_token):
